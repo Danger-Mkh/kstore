@@ -3,7 +3,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
 
+use actix_web::middleware::{Compress, Logger};
 use actix_web::{App, HttpResponse, HttpServer, Responder, web};
+use env_logger::Env;
 
 struct KvStore {
     data: Mutex<HashMap<String, String>>,
@@ -136,10 +138,13 @@ async fn delete_key(store: web::Data<KvStore>, path: web::Path<String>) -> impl 
 async fn main() -> std::io::Result<()> {
     let store = web::Data::new(KvStore::new());
     println!("Server running at http://127.0.0.1:8080");
-
+    env_logger::init_from_env(Env::default().default_filter_or("info"));
     HttpServer::new(move || {
         App::new()
             .app_data(store.clone())
+            .wrap(Compress::default())
+            .wrap(Logger::default())
+            .wrap(Logger::new("%a %{User-Agent}i"))
             .route("/kv/{key}", web::get().to(get_key))
             .route("/kv/{key}", web::put().to(put_key))
             .route("/kv/{key}", web::delete().to(delete_key))
