@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write, BufReader, Seek, SeekFrom};
-use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::sync::Mutex;
+
+use actix_web::{App, HttpResponse, HttpServer, Responder, web};
 
 struct KvStore {
     data: Mutex<HashMap<String, String>>,
@@ -13,11 +13,11 @@ struct KvStore {
 impl KvStore {
     fn new() -> Self {
         let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open("kvstore.db")
-        .unwrap();
+            .read(true)
+            .write(true)
+            .create(true)
+            .open("kvstore.db")
+            .unwrap();
 
         let mut data = HashMap::new();
         let mut reader = BufReader::new(&file);
@@ -30,9 +30,11 @@ impl KvStore {
                     break;
                 }
 
-                let key_size = u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
+                let key_size =
+                    u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
                 pos += 8;
-                let value_size = u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
+                let value_size =
+                    u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
                 pos += 8;
 
                 if pos + key_size + value_size > buffer.len() {
@@ -66,9 +68,10 @@ impl KvStore {
         data.insert(key.clone(), value.clone());
         let key_bytes = key.as_bytes();
         let value_bytes = value.as_bytes();
-
-        file.write_all(&(key_bytes.len() as u64).to_le_bytes()).unwrap();
-        file.write_all(&(value_bytes.len() as u64).to_le_bytes()).unwrap();
+        file.write_all(&(key_bytes.len() as u64).to_le_bytes())
+            .unwrap();
+        file.write_all(&(value_bytes.len() as u64).to_le_bytes())
+            .unwrap();
         file.write_all(key_bytes).unwrap();
         file.write_all(value_bytes).unwrap();
         file.flush().unwrap();
@@ -85,7 +88,8 @@ impl KvStore {
 
         if data.remove(key).is_some() {
             let key_bytes = key.as_bytes();
-            file.write_all(&(key_bytes.len() as u64).to_le_bytes()).unwrap();
+            file.write_all(&(key_bytes.len() as u64).to_le_bytes())
+                .unwrap();
             file.write_all(&0u64.to_le_bytes()).unwrap(); // value_size = 0
             file.write_all(key_bytes).unwrap();
             file.flush().unwrap();
@@ -96,63 +100,51 @@ impl KvStore {
     }
 }
 
-fn handle_client(mut stream: TcpStream, store: Arc<KvStore>) {
-    let mut buffer = [0; 1024];
-    if stream.read(&mut buffer).is_err() {
-        return;
+async fn get_key(store: web::Data<KvStore>, path: web::Path<String>) -> impl Responder {
+    let key = path.into_inner();
+    match store.get(&key) {
+        Some(value) => HttpResponse::Ok().body(value),
+        None => HttpResponse::NotFound().finish(),
     }
-
-    let request = String::from_utf8_lossy(&buffer);
-    let parts: Vec<&str> = request.lines().next().unwrap_or("").split_whitespace().collect();
-
-    if parts.len() < 2 {
-        return;
-    }
-
-    let method = parts[0];
-    let path = parts[1];
-    let key = path.strip_prefix("/kv/").unwrap_or("");
-
-    let response = match method {
-        "GET" => {
-            if let Some(value) = store.get(key) {
-                format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}", value.len(), value)
-            } else {
-                "HTTP/1.1 404 NOT FOUND\r\nContent-Length: 0\r\n\r\n".to_string()
-            }
-        }
-        "PUT" => {
-            let body = request.split("\r\n\r\n").nth(1).unwrap_or("").trim();
-            store.set(key.to_string(), body.to_string());
-            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK".to_string()
-        }
-        "DELETE" => {
-            if store.delete(key) {
-                "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK".to_string()
-            } else {
-                "HTTP/1.1 404 NOT FOUND\r\nContent-Length: 0\r\n\r\n".to_string()
-            }
-        }
-        _ => "HTTP/1.1 400 BAD REQUEST\r\nContent-Length: 0\r\n\r\n".to_string(),
-    };
-
-    stream.write_all(response.as_bytes()).unwrap();
-    stream.flush().unwrap();
 }
 
-fn main() {
-    let listener = TcpListener::bind("127.0.0.1:8080").unwrap();
-    let store = Arc::new(KvStore::new());
-
-    println!("Server running at http://127.0.0.1:8080");
-
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let store = Arc::clone(&store);
-                thread::spawn(|| handle_client(stream, store));
-            }
-            Err(e) => eprintln!("Error: {}", e),
+async fn put_key(
+    store: web::Data<KvStore>,
+    path: web::Path<String>,
+    body: String,
+) -> impl Responder {
+    let key = path.into_inner();
+    match store.get(&key) {
+        Some(_val) => HttpResponse::BadRequest().body("key already exist"),
+        None => {
+            store.set(key, body);
+            HttpResponse::Ok().body("OK")
         }
     }
+}
+
+async fn delete_key(store: web::Data<KvStore>, path: web::Path<String>) -> impl Responder {
+    let key = path.into_inner();
+    if store.delete(&key) {
+        HttpResponse::Ok().body("OK")
+    } else {
+        HttpResponse::NotFound().finish()
+    }
+}
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let store = web::Data::new(KvStore::new());
+    println!("Server running at http://127.0.0.1:8080");
+
+    HttpServer::new(move || {
+        App::new()
+            .app_data(store.clone())
+            .route("/kv/{key}", web::get().to(get_key))
+            .route("/kv/{key}", web::put().to(put_key))
+            .route("/kv/{key}", web::delete().to(delete_key))
+    })
+    .bind("127.0.0.1:8080")?
+    .run()
+    .await
 }
