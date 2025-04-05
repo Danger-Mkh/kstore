@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use actix_web::middleware::{Compress, Logger};
 use actix_web::{App, HttpResponse, HttpServer, Responder, web};
 use env_logger::Env;
+use regex::Regex;
 
 struct KvStore {
     data: Mutex<HashMap<String, String>>,
@@ -84,21 +85,46 @@ impl KvStore {
         data.get(key).cloned()
     }
 
-    fn delete(&self, key: &str) -> bool {
-        let mut data = self.data.lock().unwrap();
+    fn compact(&self) {
+        let data = self.data.lock().unwrap();
         let mut file = self.file.lock().unwrap();
 
-        if data.remove(key).is_some() {
+        file.set_len(0).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+
+        for (key, value) in data.iter() {
             let key_bytes = key.as_bytes();
+            let value_bytes = value.as_bytes();
             file.write_all(&(key_bytes.len() as u64).to_le_bytes())
                 .unwrap();
-            file.write_all(&0u64.to_le_bytes()).unwrap(); // value_size = 0
+            file.write_all(&(value_bytes.len() as u64).to_le_bytes())
+                .unwrap();
             file.write_all(key_bytes).unwrap();
-            file.flush().unwrap();
+            file.write_all(value_bytes).unwrap();
+        }
+        file.flush().unwrap();
+    }
+
+    fn delete(&self, key: &str) -> bool {
+        let mut data = self.data.lock().unwrap();
+        if data.remove(key).is_some() {
+            drop(data);
+            self.compact();
             true
         } else {
             false
         }
+    }
+
+    fn find_values_by_regex(&self, pattern: &str) -> Result<Vec<String>, regex::Error> {
+        let re = Regex::new(pattern)?;
+        let data = self.data.lock().unwrap();
+        let values: Vec<String> = data
+            .iter()
+            .filter(|(key, _)| re.is_match(key))
+            .map(|(_, value)| value.clone())
+            .collect();
+        Ok(values)
     }
 }
 
@@ -149,6 +175,21 @@ async fn delete_key(store: web::Data<KvStore>, path: web::Path<String>) -> impl 
     }
 }
 
+async fn get_values_by_regex(store: web::Data<KvStore>, path: web::Path<String>) -> impl Responder {
+    let pattern = path.into_inner();
+    match store.find_values_by_regex(&pattern) {
+        Ok(values) => {
+            if values.is_empty() {
+                HttpResponse::NotFound().body("No values matched the pattern")
+            } else {
+                let response = values.join("\n");
+                HttpResponse::Ok().body(response)
+            }
+        }
+        Err(e) => HttpResponse::BadRequest().body(format!("Invalid regex pattern: {}", e)),
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let store = web::Data::new(KvStore::new());
@@ -164,6 +205,7 @@ async fn main() -> std::io::Result<()> {
             .route("/kv/{key}", web::post().to(put_key))
             .route("/kv/{key}", web::put().to(update_key))
             .route("/kv/{key}", web::delete().to(delete_key))
+            .route("/kv/r/{regex}", web::get().to(get_values_by_regex))
     })
     .bind("127.0.0.1:8080")?
     .run()
