@@ -89,11 +89,9 @@ impl KvStore {
         let data = self.data.lock().unwrap();
         let mut file = self.file.lock().unwrap();
 
-        // Truncate the file to start fresh
         file.set_len(0).unwrap();
         file.seek(SeekFrom::Start(0)).unwrap();
 
-        // Rewrite all active key-value pairs
         for (key, value) in data.iter() {
             let key_bytes = key.as_bytes();
             let value_bytes = value.as_bytes();
@@ -110,8 +108,7 @@ impl KvStore {
     fn delete(&self, key: &str) -> bool {
         let mut data = self.data.lock().unwrap();
         if data.remove(key).is_some() {
-            // After removing from memory, compact the file to "cut" the entry
-            drop(data); // Release the lock before compacting
+            drop(data);
             self.compact();
             true
         } else {
