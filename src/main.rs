@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use actix_web::middleware::{Compress, Logger};
 use actix_web::{App, HttpResponse, HttpServer, Responder, web};
 use env_logger::Env;
+use regex::Regex;
 
 struct KvStore {
     data: Mutex<HashMap<String, String>>,
@@ -15,11 +16,11 @@ struct KvStore {
 impl KvStore {
     fn new() -> Self {
         let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open("kvstore.db")
-            .unwrap();
+        .read(true)
+        .write(true)
+        .create(true)
+        .open("kvstore.db")
+        .unwrap();
 
         let mut data = HashMap::new();
         let mut reader = BufReader::new(&file);
@@ -33,10 +34,10 @@ impl KvStore {
                 }
 
                 let key_size =
-                    u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
+                u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
                 pos += 8;
                 let value_size =
-                    u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
+                u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
                 pos += 8;
 
                 if pos + key_size + value_size > buffer.len() {
@@ -71,9 +72,9 @@ impl KvStore {
         let key_bytes = key.as_bytes();
         let value_bytes = value.as_bytes();
         file.write_all(&(key_bytes.len() as u64).to_le_bytes())
-            .unwrap();
+        .unwrap();
         file.write_all(&(value_bytes.len() as u64).to_le_bytes())
-            .unwrap();
+        .unwrap();
         file.write_all(key_bytes).unwrap();
         file.write_all(value_bytes).unwrap();
         file.flush().unwrap();
@@ -91,14 +92,25 @@ impl KvStore {
         if data.remove(key).is_some() {
             let key_bytes = key.as_bytes();
             file.write_all(&(key_bytes.len() as u64).to_le_bytes())
-                .unwrap();
-            file.write_all(&0u64.to_le_bytes()).unwrap(); // value_size = 0
+            .unwrap();
+            file.write_all(&0u64.to_le_bytes()).unwrap();
             file.write_all(key_bytes).unwrap();
             file.flush().unwrap();
             true
         } else {
             false
         }
+    }
+
+    fn find_by_regex(&self, pattern: &str) -> Result<Vec<(String, String)>, regex::Error> {
+        let re = Regex::new(pattern)?;
+        let data = self.data.lock().unwrap();
+        let matches: Vec<(String, String)> = data
+        .iter()
+        .filter(|(key, _)| re.is_match(key))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+        Ok(matches)
     }
 }
 
@@ -134,6 +146,28 @@ async fn delete_key(store: web::Data<KvStore>, path: web::Path<String>) -> impl 
     }
 }
 
+async fn find_keys_by_regex(
+    store: web::Data<KvStore>,
+    path: web::Path<String>,
+) -> impl Responder {
+    let pattern = path.into_inner();
+    match store.find_by_regex(&pattern) {
+        Ok(matches) => {
+            if matches.is_empty() {
+                HttpResponse::NotFound().body("No keys matched the pattern")
+            } else {
+                let response = matches
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, v))
+                .collect::<Vec<String>>()
+                .join("\n");
+                HttpResponse::Ok().body(response)
+            }
+        }
+        Err(e) => HttpResponse::BadRequest().body(format!("Invalid regex pattern: {}", e)),
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let store = web::Data::new(KvStore::new());
@@ -141,13 +175,14 @@ async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(Env::default().default_filter_or("info"));
     HttpServer::new(move || {
         App::new()
-            .app_data(store.clone())
-            .wrap(Compress::default())
-            .wrap(Logger::default())
-            .wrap(Logger::new("%a %{User-Agent}i"))
-            .route("/kv/{key}", web::get().to(get_key))
-            .route("/kv/{key}", web::put().to(put_key))
-            .route("/kv/{key}", web::delete().to(delete_key))
+        .app_data(store.clone())
+        .wrap(Compress::default())
+        .wrap(Logger::default())
+        .wrap(Logger::new("%a %{User-Agent}i"))
+        .route("/kv/{key}", web::get().to(get_key))
+        .route("/kv/{key}", web::put().to(put_key))
+        .route("/kv/{key}", web::delete().to(delete_key))
+        .route("/kv/r/{regex}", web::get().to(find_keys_by_regex)) // New regex endpoint
     })
     .bind("127.0.0.1:8080")?
     .run()
