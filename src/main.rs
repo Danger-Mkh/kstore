@@ -85,32 +85,49 @@ impl KvStore {
         data.get(key).cloned()
     }
 
-    fn delete(&self, key: &str) -> bool {
-        let mut data = self.data.lock().unwrap();
+    fn compact(&self) {
+        let data = self.data.lock().unwrap();
         let mut file = self.file.lock().unwrap();
 
-        if data.remove(key).is_some() {
+        // Truncate the file to start fresh
+        file.set_len(0).unwrap();
+        file.seek(SeekFrom::Start(0)).unwrap();
+
+        // Rewrite all active key-value pairs
+        for (key, value) in data.iter() {
             let key_bytes = key.as_bytes();
+            let value_bytes = value.as_bytes();
             file.write_all(&(key_bytes.len() as u64).to_le_bytes())
             .unwrap();
-            file.write_all(&0u64.to_le_bytes()).unwrap();
+            file.write_all(&(value_bytes.len() as u64).to_le_bytes())
+            .unwrap();
             file.write_all(key_bytes).unwrap();
-            file.flush().unwrap();
+            file.write_all(value_bytes).unwrap();
+        }
+        file.flush().unwrap();
+    }
+
+    fn delete(&self, key: &str) -> bool {
+        let mut data = self.data.lock().unwrap();
+        if data.remove(key).is_some() {
+            // After removing from memory, compact the file to "cut" the entry
+            drop(data); // Release the lock before compacting
+            self.compact();
             true
         } else {
             false
         }
     }
 
-    fn find_by_regex(&self, pattern: &str) -> Result<Vec<(String, String)>, regex::Error> {
+    fn find_values_by_regex(&self, pattern: &str) -> Result<Vec<String>, regex::Error> {
         let re = Regex::new(pattern)?;
         let data = self.data.lock().unwrap();
-        let matches: Vec<(String, String)> = data
+        let values: Vec<String> = data
         .iter()
         .filter(|(key, _)| re.is_match(key))
-        .map(|(key, value)| (key.clone(), value.clone()))
+        .map(|(_, value)| value.clone())
         .collect();
-        Ok(matches)
+        Ok(values)
     }
 }
 
@@ -146,21 +163,17 @@ async fn delete_key(store: web::Data<KvStore>, path: web::Path<String>) -> impl 
     }
 }
 
-async fn find_keys_by_regex(
+async fn get_values_by_regex(
     store: web::Data<KvStore>,
     path: web::Path<String>,
 ) -> impl Responder {
     let pattern = path.into_inner();
-    match store.find_by_regex(&pattern) {
-        Ok(matches) => {
-            if matches.is_empty() {
-                HttpResponse::NotFound().body("No keys matched the pattern")
+    match store.find_values_by_regex(&pattern) {
+        Ok(values) => {
+            if values.is_empty() {
+                HttpResponse::NotFound().body("No values matched the pattern")
             } else {
-                let response = matches
-                .iter()
-                .map(|(k, v)| format!("{}: {}", k, v))
-                .collect::<Vec<String>>()
-                .join("\n");
+                let response = values.join("\n");
                 HttpResponse::Ok().body(response)
             }
         }
@@ -182,7 +195,7 @@ async fn main() -> std::io::Result<()> {
         .route("/kv/{key}", web::get().to(get_key))
         .route("/kv/{key}", web::put().to(put_key))
         .route("/kv/{key}", web::delete().to(delete_key))
-        .route("/kv/r/{regex}", web::get().to(find_keys_by_regex)) // New regex endpoint
+        .route("/kv/r/{regex}", web::get().to(get_values_by_regex))
     })
     .bind("127.0.0.1:8080")?
     .run()
