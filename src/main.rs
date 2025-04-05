@@ -125,6 +125,21 @@ async fn put_key(
     }
 }
 
+async fn update_key(
+    store: web::Data<KvStore>,
+    path: web::Path<String>,
+    body: String,
+) -> impl Responder {
+    let key = path.into_inner();
+    match store.get(&key) {
+        Some(_val) => {
+            store.set(key, body);
+            HttpResponse::Ok().body("OK")
+        }
+        None => HttpResponse::BadRequest().body("key does not exist"),
+    }
+}
+
 async fn delete_key(store: web::Data<KvStore>, path: web::Path<String>) -> impl Responder {
     let key = path.into_inner();
     if store.delete(&key) {
@@ -146,7 +161,8 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::default())
             .wrap(Logger::new("%a %{User-Agent}i"))
             .route("/kv/{key}", web::get().to(get_key))
-            .route("/kv/{key}", web::put().to(put_key))
+            .route("/kv/{key}", web::post().to(put_key))
+            .route("/kv/{key}", web::put().to(update_key))
             .route("/kv/{key}", web::delete().to(delete_key))
     })
     .bind("127.0.0.1:8080")?
