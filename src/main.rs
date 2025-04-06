@@ -16,11 +16,11 @@ struct KvStore {
 impl KvStore {
     fn new() -> Self {
         let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open("kvstore.db")
-        .unwrap();
+            .read(true)
+            .write(true)
+            .create(true)
+            .open("kvstore.db")
+            .unwrap();
 
         let mut data = HashMap::new();
         let mut reader = BufReader::new(&file);
@@ -34,10 +34,10 @@ impl KvStore {
                 }
 
                 let key_size =
-                u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
+                    u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
                 pos += 8;
                 let value_size =
-                u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
+                    u64::from_le_bytes(buffer[pos..pos + 8].try_into().unwrap()) as usize;
                 pos += 8;
 
                 if pos + key_size + value_size > buffer.len() {
@@ -72,9 +72,9 @@ impl KvStore {
         let key_bytes = key.as_bytes();
         let value_bytes = value.as_bytes();
         file.write_all(&(key_bytes.len() as u64).to_le_bytes())
-        .unwrap();
+            .unwrap();
         file.write_all(&(value_bytes.len() as u64).to_le_bytes())
-        .unwrap();
+            .unwrap();
         file.write_all(key_bytes).unwrap();
         file.write_all(value_bytes).unwrap();
         file.flush().unwrap();
@@ -96,9 +96,9 @@ impl KvStore {
             let key_bytes = key.as_bytes();
             let value_bytes = value.as_bytes();
             file.write_all(&(key_bytes.len() as u64).to_le_bytes())
-            .unwrap();
+                .unwrap();
             file.write_all(&(value_bytes.len() as u64).to_le_bytes())
-            .unwrap();
+                .unwrap();
             file.write_all(key_bytes).unwrap();
             file.write_all(value_bytes).unwrap();
         }
@@ -120,10 +120,10 @@ impl KvStore {
         let re = Regex::new(pattern)?;
         let data = self.data.lock().unwrap();
         let values: Vec<String> = data
-        .iter()
-        .filter(|(key, _)| re.is_match(key))
-        .map(|(_, value)| value.clone())
-        .collect();
+            .iter()
+            .filter(|(key, _)| re.is_match(key))
+            .map(|(_, value)| value.clone())
+            .collect();
         Ok(values)
     }
 }
@@ -151,6 +151,21 @@ async fn put_key(
     }
 }
 
+async fn update_key(
+    store: web::Data<KvStore>,
+    path: web::Path<String>,
+    body: String,
+) -> impl Responder {
+    let key = path.into_inner();
+    match store.get(&key) {
+        Some(_val) => {
+            store.set(key, body);
+            HttpResponse::Ok().body("OK")
+        }
+        None => HttpResponse::BadRequest().body("key does not exist"),
+    }
+}
+
 async fn delete_key(store: web::Data<KvStore>, path: web::Path<String>) -> impl Responder {
     let key = path.into_inner();
     if store.delete(&key) {
@@ -160,10 +175,7 @@ async fn delete_key(store: web::Data<KvStore>, path: web::Path<String>) -> impl 
     }
 }
 
-async fn get_values_by_regex(
-    store: web::Data<KvStore>,
-    path: web::Path<String>,
-) -> impl Responder {
+async fn get_values_by_regex(store: web::Data<KvStore>, path: web::Path<String>) -> impl Responder {
     let pattern = path.into_inner();
     match store.find_values_by_regex(&pattern) {
         Ok(values) => {
@@ -185,14 +197,15 @@ async fn main() -> std::io::Result<()> {
     env_logger::init_from_env(Env::default().default_filter_or("info"));
     HttpServer::new(move || {
         App::new()
-        .app_data(store.clone())
-        .wrap(Compress::default())
-        .wrap(Logger::default())
-        .wrap(Logger::new("%a %{User-Agent}i"))
-        .route("/kv/{key}", web::get().to(get_key))
-        .route("/kv/{key}", web::put().to(put_key))
-        .route("/kv/{key}", web::delete().to(delete_key))
-        .route("/kv/r/{regex}", web::get().to(get_values_by_regex))
+            .app_data(store.clone())
+            .wrap(Compress::default())
+            .wrap(Logger::default())
+            .wrap(Logger::new("%a %{User-Agent}i"))
+            .route("/kv/{key}", web::get().to(get_key))
+            .route("/kv/{key}", web::post().to(put_key))
+            .route("/kv/{key}", web::put().to(update_key))
+            .route("/kv/{key}", web::delete().to(delete_key))
+            .route("/kv/r/{regex}", web::get().to(get_values_by_regex))
     })
     .bind("127.0.0.1:8080")?
     .run()
