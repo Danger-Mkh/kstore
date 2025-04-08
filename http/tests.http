@@ -1,0 +1,16 @@
+### Get all keys
+GET http://localhost:8080/kv/
+
+
+### Create a new key
+POST http://localhost:8080/kv/some
+
+something
+
+### Get a specific key by ID
+GET http://localhost:8080/keys/some
+Content-Type: application/json
+
+
+### Delete a key by ID
+DELETE http://localhost:8080/kv/some

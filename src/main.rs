@@ -128,6 +128,15 @@ impl KvStore {
     }
 }
 
+async fn get_all_keys(store: web::Data<KvStore>) -> impl Responder {
+    let data = store.data.lock().unwrap();
+    let keys: Vec<String> = data.keys().cloned().collect();
+    if keys.is_empty() {
+        HttpResponse::NotFound().json(vec![] as Vec<String>)
+    } else {
+        HttpResponse::Ok().json(keys)
+    }
+}
 async fn get_key(store: web::Data<KvStore>, path: web::Path<String>) -> impl Responder {
     let key = path.into_inner();
     match store.get(&key) {
@@ -201,6 +210,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Compress::default())
             .wrap(Logger::default())
             .wrap(Logger::new("%a %{User-Agent}i"))
+            .route("/kv/", web::get().to(get_all_keys))
             .route("/kv/{key}", web::get().to(get_key))
             .route("/kv/{key}", web::post().to(put_key))
             .route("/kv/{key}", web::put().to(update_key))
