@@ -11,10 +11,10 @@ COPY Cargo.toml Cargo.lock ./
 COPY . .
 
 # Build the application
-RUN cargo build --release
+RUN cargo build --release -j $(nproc)
 
 # Use a minimal base image for the final stage
-FROM debian:buster-slim
+FROM debian:latest
 
 # Install necessary dependencies
 RUN apt-get update && apt-get install -y libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
